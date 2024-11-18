@@ -32,13 +32,13 @@ const validateSmsRequest = [
   body('Body').trim().notEmpty().withMessage('Message body cannot be empty'),
   (req, res, next) => {
     const errors = validationResult(req);
-    console.log(req.body.From)
     if (!errors.isEmpty()) {
       sendMessage(req.body.From, 'Invalid request. Please send a location.')
         .then(() => res.status(200).end())
         .catch(next);
       return;
     }
+    console.log(`Received message from ${req.body.From}: ${req.body.Body}`);
     next();
   }
 ];
@@ -57,8 +57,6 @@ async function sendMessage(to, body) {
 app.post('/sms', twilio.webhook({ validate: false }), validateSmsRequest, async (req, res) => {
   const messageBody = req.body.Body.trim();
   const from = req.body.From;
-
-  console.log(from)
 
   // Set timeout for the entire request
   const timeout = setTimeout(async () => {
