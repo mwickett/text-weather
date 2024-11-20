@@ -54,7 +54,7 @@ async function sendMessage(to, body) {
 }
 
 // SMS endpoint with Twilio validation and request validation
-app.post('/sms', twilio.webhook({ validate: false }), validateSmsRequest, async (req, res) => {
+app.post('/sms', twilio.webhook({ validate: true }), validateSmsRequest, async (req, res) => {
   const messageBody = req.body.Body.trim();
   const from = req.body.From;
 
@@ -127,5 +127,5 @@ app.use(async (err, req, res, next) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`Health check available at http://localhost:${PORT}/health`);
+  console.log(`Health check available at <domain>:${PORT}/health`);
 });
