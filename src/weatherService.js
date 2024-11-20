@@ -31,11 +31,11 @@ export async function getWeatherForecast(lat, lng) {
     const next12Hours = data.list.slice(0, 4);
     const location = data.city.name;
 
-    // Format immediate forecast (next 3 hours)
+    // Format immediate forecast (current conditions)
     const immediate = formatImmediateForecast(next12Hours[0]);
     
-    // Format upcoming hours
-    const upcoming = formatUpcomingForecast(next12Hours.slice(1));
+    // Format upcoming hours (next three 3-hour intervals)
+    const upcoming = formatUpcomingForecast(next12Hours.slice(1, 4));
     
     // Calculate 12-hour summary
     const summary = calculateSummary(next12Hours);
