@@ -2,28 +2,54 @@ import fetch from 'node-fetch';
 
 const W3W_API_URL = 'https://api.what3words.com/v3';
 
+function parseCoordinate(coord, isLatitude = true) {
+  // Remove any parentheses and trim whitespace
+  coord = coord.replace(/[()]/g, '').trim();
+
+  // Handle cardinal directions
+  let multiplier = 1;
+  if (coord.toUpperCase().endsWith('S') || coord.toUpperCase().endsWith('W')) {
+    multiplier = -1;
+    coord = coord.slice(0, -1);
+  } else if (coord.toUpperCase().endsWith('N') || coord.toUpperCase().endsWith('E')) {
+    coord = coord.slice(0, -1);
+  }
+
+  // Remove degree symbols and trim
+  coord = coord.replace(/°/g, '').trim();
+
+  // Parse the coordinate as a float
+  const value = parseFloat(coord) * multiplier;
+
+  // Validate the range
+  if (isLatitude && (value < -90 || value > 90)) {
+    throw new Error('Invalid latitude: Must be between -90 and 90 degrees');
+  } else if (!isLatitude && (value < -180 || value > 180)) {
+    throw new Error('Invalid longitude: Must be between -180 and 180 degrees');
+  }
+
+  return value;
+}
+
 export async function processLocation(input) {
   if (!input || typeof input !== 'string') {
     throw new Error('Invalid input: Location must be provided as text');
   }
 
   // Check if input is coordinates
-  const coordsRegex = /^(-?\d+\.?\d*),(-?\d+\.?\d*)$/;
+  // Match various coordinate formats with flexible spacing and optional symbols
+  const coordsRegex = /^[(\s]*(-?\d+\.?\d*°?[NSns]?)[,\s]+(-?\d+\.?\d*°?[EWew]?)[)\s]*$/;
   const coordsMatch = input.match(coordsRegex);
 
   if (coordsMatch) {
-    const lat = parseFloat(coordsMatch[1]);
-    const lng = parseFloat(coordsMatch[2]);
+    try {
+      const lat = parseCoordinate(coordsMatch[1], true);
+      const lng = parseCoordinate(coordsMatch[2], false);
 
-    // Validate coordinate ranges
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      throw new Error('Invalid coordinates: Values out of range');
+      return { lat, lng };
+    } catch (error) {
+      throw new Error(`Invalid coordinates: ${error.message}`);
     }
-
-    return {
-      lat,
-      lng
-    };
   }
 
   // Check if input is What3Words
@@ -68,5 +94,7 @@ export async function processLocation(input) {
     }
   }
 
-  throw new Error('Invalid location format - please use coordinates (e.g., 51.5074,-0.1278) or What3Words (e.g., ///filled.count.soap or filled.count.soap)');
+  throw new Error('Invalid location format. Please use either:\n' +
+    '- Coordinates: 51.5074,-0.1278 or 51.5074N, 0.1278W\n' +
+    '- What3Words: ///filled.count.soap or filled.count.soap');
 }
