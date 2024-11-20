@@ -14,17 +14,33 @@ app.use(express.urlencoded({ extended: true }));
 // Initialize Twilio client
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-// Rate limiting
+// Rate limiting based on sender's phone number
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.'
+  max: 100, // Limit each phone number to 100 requests per windowMs
+  message: 'Too many requests from this number, please try again later.',
+  keyGenerator: (req) => {
+    // Use the sender's phone number as the rate limit key
+    // This will only be present after Twilio validation
+    return req.body?.From || 'unknown';
+  },
+  // Skip the IP validation since we're using Twilio's cryptographic validation
+  validate: { trustProxy: false }
 });
-app.use(limiter);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Fallback webhook logging route - captures all incoming requests
+app.post('/webhook-log', (req, res) => {
+  console.log('=== Incoming Webhook Request ===');
+  console.log('Timestamp:', new Date().toISOString());
+  console.log('Headers:', JSON.stringify(req.headers, null, 2));
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  console.log('===========================');
+  res.status(200).end(); // Always return 200 to acknowledge receipt
 });
 
 // Request validation middleware
@@ -54,58 +70,67 @@ async function sendMessage(to, body) {
 }
 
 // SMS endpoint with Twilio validation and request validation
-app.post('/sms', twilio.webhook({ validate: true }), validateSmsRequest, async (req, res) => {
-  const messageBody = req.body.Body.trim();
-  const from = req.body.From;
+app.post('/sms', 
+  // Configure webhook validation with the full URL
+  twilio.webhook({ 
+    validate: true,
+    protocol: 'https',
+    host: process.env.WEBHOOK_DOMAIN // e.g., "261e-74-14-14-222.ngrok-free.app"
+  }), 
+  limiter, 
+  validateSmsRequest, 
+  async (req, res) => {
+    const messageBody = req.body.Body.trim();
+    const from = req.body.From;
 
-  // Set timeout for the entire request
-  const timeout = setTimeout(async () => {
-    if (!res.headersSent) {
-      try {
-        await sendMessage(from, 'Request timed out. Please try again.');
-        res.status(200).end();
-      } catch (error) {
-        console.error('Error sending timeout message:', error);
-        res.status(500).end();
+    // Set timeout for the entire request
+    const timeout = setTimeout(async () => {
+      if (!res.headersSent) {
+        try {
+          await sendMessage(from, 'Request timed out. Please try again.');
+          res.status(200).end();
+        } catch (error) {
+          console.error('Error sending timeout message:', error);
+          res.status(500).end();
+        }
       }
-    }
-  }, 10000); // 10 second timeout
+    }, 10000); // 10 second timeout
 
-  try {
-    const coordinates = await processLocation(messageBody);
-    if (!coordinates) {
-      await sendMessage(from, 'Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")');
+    try {
+      const coordinates = await processLocation(messageBody);
+      if (!coordinates) {
+        await sendMessage(from, 'Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")');
+        res.status(200).end();
+        return;
+      }
+
+      const forecast = await getWeatherForecast(coordinates.lat, coordinates.lng);
+      await sendMessage(from, forecast);
+      clearTimeout(timeout);
       res.status(200).end();
-      return;
-    }
-
-    const forecast = await getWeatherForecast(coordinates.lat, coordinates.lng);
-    await sendMessage(from, forecast);
-    clearTimeout(timeout);
-    res.status(200).end();
-  } catch (error) {
-    console.error('Error processing request:', error);
-    
-    // Provide more specific error messages
-    let errorMessage = 'Sorry, there was an error processing your request. Please try again.';
-    if (error.message.includes('Weather service error')) {
-      errorMessage = 'Unable to fetch weather data at this time. Please try again later.';
-    } else if (error.message.includes('What3Words')) {
-      errorMessage = 'Invalid location format. Please check your input and try again.';
-    }
-    
-    if (!res.headersSent) {
-      try {
-        await sendMessage(from, errorMessage);
-        res.status(200).end();
-      } catch (sendError) {
-        console.error('Error sending error message:', sendError);
-        res.status(500).end();
+    } catch (error) {
+      console.error('Error processing request:', error);
+      
+      // Provide more specific error messages
+      let errorMessage = 'Sorry, there was an error processing your request. Please try again.';
+      if (error.message.includes('Weather service error')) {
+        errorMessage = 'Unable to fetch weather data at this time. Please try again later.';
+      } else if (error.message.includes('What3Words')) {
+        errorMessage = 'Invalid location format. Please check your input and try again.';
       }
+      
+      if (!res.headersSent) {
+        try {
+          await sendMessage(from, errorMessage);
+          res.status(200).end();
+        } catch (sendError) {
+          console.error('Error sending error message:', sendError);
+          res.status(500).end();
+        }
+      }
+    } finally {
+      clearTimeout(timeout);
     }
-  } finally {
-    clearTimeout(timeout);
-  }
 });
 
 // Error handling middleware
