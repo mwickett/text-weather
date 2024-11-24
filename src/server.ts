@@ -3,11 +3,12 @@ import twilio from 'twilio';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import { body, validationResult } from 'express-validator';
-import { processLocation } from './services/locationProcessor';
-import { WeatherServiceManager } from './services/weatherManager';
-import { OpenWeatherMapProvider } from './providers/openweathermap';
-import { LocationProcessingError } from './types/location';
-import { WeatherServiceError } from './types/weather';
+import { processLocation } from './services/locationProcessor.js';
+import { WeatherServiceManager } from './services/weatherManager.js';
+import { OpenWeatherMapProvider } from './providers/openweathermap.js';
+import { TomorrowIOProvider } from './providers/tomorrowio.js';
+import { LocationProcessingError } from './types/location.js';
+import { WeatherServiceError } from './types/weather.js';
 
 // Load environment variables
 dotenv.config();
@@ -15,6 +16,7 @@ dotenv.config();
 // Validate required environment variables
 const requiredEnvVars = [
   'OPENWEATHER_API_KEY',
+  'TOMORROWIO_API_KEY',
   'WHAT3WORDS_API_KEY',
   'TWILIO_ACCOUNT_SID',
   'TWILIO_AUTH_TOKEN',
@@ -30,7 +32,8 @@ for (const envVar of requiredEnvVars) {
 
 // Initialize weather service
 const weatherManager = new WeatherServiceManager([
-  new OpenWeatherMapProvider(process.env.OPENWEATHER_API_KEY)
+  new OpenWeatherMapProvider(process.env.OPENWEATHER_API_KEY),
+  new TomorrowIOProvider(process.env.TOMORROWIO_API_KEY)
 ]);
 
 const app = express();
@@ -107,6 +110,20 @@ async function sendMessage(to: string, body: string): Promise<void> {
   });
 }
 
+// Helper function to extract provider from message
+function extractProvider(message: string): { location: string; provider?: string } {
+  const parts = message.trim().split(' via ');
+  if (parts.length === 2) {
+    return {
+      location: parts[0],
+      provider: parts[1]
+    };
+  }
+  return {
+    location: message
+  };
+}
+
 // Development endpoint to simulate incoming SMS
 app.post('/dev/simulate-text',
   [
@@ -127,18 +144,22 @@ app.post('/dev/simulate-text',
     console.log('===========================');
 
     try {
-      const coordinates = await processLocation(body.Body);
+      const { location, provider } = extractProvider(body.Body);
+      const coordinates = await processLocation(location);
       if (!coordinates) {
-        const response = 'Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")';
+        const providers = weatherManager.getProviderNames();
+        const response = `Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")
+
+Optional: Add "via <provider>" to use a specific provider. Available providers: ${providers.join(', ')}`;
         console.log('Response:', response);
         res.json({ success: true, message: response });
         return;
       }
 
-      const forecast = await weatherManager.getForecast(coordinates.lat, coordinates.lng);
+      const forecast = await weatherManager.getForecast(coordinates.lat, coordinates.lng, provider);
       console.log('Response:', forecast);
       res.json({ success: true, message: forecast });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error processing request:', error);
       let errorMessage = 'Sorry, there was an error processing your request. Please try again.';
       
@@ -180,18 +201,23 @@ app.post('/sms',
     }, 10000); // 10 second timeout
 
     try {
-      const coordinates = await processLocation(messageBody);
+      const { location, provider } = extractProvider(messageBody);
+      const coordinates = await processLocation(location);
       if (!coordinates) {
-        await sendMessage(from, 'Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")');
+        const providers = weatherManager.getProviderNames();
+        const response = `Please send a valid What3Words location (e.g., "///filled.count.soap" or "filled.count.soap") or coordinates (e.g., "51.5074,-0.1278")
+
+Optional: Add "via <provider>" to use a specific provider. Available providers: ${providers.join(', ')}`;
+        await sendMessage(from, response);
         res.status(200).end();
         return;
       }
 
-      const forecast = await weatherManager.getForecast(coordinates.lat, coordinates.lng);
+      const forecast = await weatherManager.getForecast(coordinates.lat, coordinates.lng, provider);
       await sendMessage(from, forecast);
       clearTimeout(timeout);
       res.status(200).end();
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Error processing request:', error);
       
       let errorMessage = 'Sorry, there was an error processing your request. Please try again.';

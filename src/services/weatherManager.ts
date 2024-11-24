@@ -1,43 +1,85 @@
 import { WeatherProvider, StandardizedForecast, WeatherServiceError } from '../types/weather.js';
 
 export class WeatherServiceManager {
-  private readonly providers: WeatherProvider[];
+  private readonly providers: Map<string, WeatherProvider>;
   private activeProvider: WeatherProvider;
+  private readonly priorityOrder: string[];
 
   constructor(providers: WeatherProvider[]) {
     if (providers.length === 0) {
       throw new Error('At least one weather provider must be configured');
     }
-    this.providers = providers;
-    this.activeProvider = providers[0];
-  }
 
-  async getForecast(lat: number, lng: number): Promise<string> {
-    const errors: Error[] = [];
+    // Create a map of providers by name for easy lookup
+    this.providers = new Map(
+      providers.map(provider => [provider.getName(), provider])
+    );
 
-    // Try active provider first
-    try {
-      const forecast = await this.activeProvider.getForecast(lat, lng);
-      return this.formatForecast(forecast);
-    } catch (error) {
-      errors.push(error as Error);
-      console.error(`Active provider ${this.activeProvider.getName()} failed:`, error);
+    // Set priority order based on environment variable or default to all providers in given order
+    const priorityString = process.env.WEATHER_PROVIDER_PRIORITY;
+    if (priorityString) {
+      // Filter out any provider names that don't exist in our providers map
+      this.priorityOrder = priorityString
+        .split(',')
+        .map(name => name.trim())
+        .filter(name => this.providers.has(name));
+
+      // Add any providers that weren't in the priority string to the end
+      const remainingProviders = Array.from(this.providers.keys())
+        .filter(name => !this.priorityOrder.includes(name));
+      this.priorityOrder.push(...remainingProviders);
+    } else {
+      // Default to the order providers were passed in
+      this.priorityOrder = providers.map(provider => provider.getName());
     }
 
-    // Try other providers if active provider fails
-    for (const provider of this.providers) {
-      if (provider === this.activeProvider) continue;
+    // Set initial active provider based on priority
+    const firstProvider = this.providers.get(this.priorityOrder[0]);
+    if (!firstProvider) {
+      throw new Error('No valid weather providers available');
+    }
+    this.activeProvider = firstProvider;
+  }
+
+  async getForecast(lat: number, lng: number, preferredProvider?: string): Promise<string> {
+    const errors: Error[] = [];
+
+    // If a preferred provider is specified and exists, try it first
+    if (preferredProvider) {
+      const provider = this.providers.get(preferredProvider);
+      if (provider) {
+        try {
+          if (await provider.isAvailable()) {
+            const forecast = await provider.getForecast(lat, lng);
+            this.activeProvider = provider;
+            console.log(`Using weather provider: ${provider.getName()}`);
+            return this.formatForecast(forecast, provider.getName());
+          }
+        } catch (error) {
+          errors.push(error as Error);
+          console.error(`Preferred provider ${provider.getName()} failed:`, error);
+        }
+      }
+    }
+
+    // Try providers in priority order
+    for (const providerName of this.priorityOrder) {
+      // Skip if this was the preferred provider we already tried
+      if (preferredProvider && providerName === preferredProvider) continue;
+
+      const provider = this.providers.get(providerName);
+      if (!provider) continue;
 
       try {
         if (await provider.isAvailable()) {
           const forecast = await provider.getForecast(lat, lng);
-          this.activeProvider = provider; // Switch to working provider
-          console.log(`Switched to backup provider: ${provider.getName()}`);
-          return this.formatForecast(forecast);
+          this.activeProvider = provider;
+          console.log(`Using weather provider: ${provider.getName()}`);
+          return this.formatForecast(forecast, provider.getName());
         }
       } catch (error) {
         errors.push(error as Error);
-        console.error(`Backup provider ${provider.getName()} failed:`, error);
+        console.error(`Provider ${provider.getName()} failed:`, error);
         continue;
       }
     }
@@ -53,7 +95,7 @@ export class WeatherServiceManager {
     throw new Error(`Unable to fetch weather data: ${errorMessages}`);
   }
 
-  private formatForecast(forecast: StandardizedForecast): string {
+  private formatForecast(forecast: StandardizedForecast, providerName: string): string {
     const { location, current, hourly, summary } = forecast;
 
     // Format immediate conditions
@@ -80,6 +122,7 @@ export class WeatherServiceManager {
 
     // Combine all sections
     return `Weather forecast for ${location}:
+(via ${providerName})
 
 Right now:
 ${immediate}
@@ -96,6 +139,14 @@ ${summaryText}`;
   }
 
   getAllProviders(): WeatherProvider[] {
-    return [...this.providers];
+    return this.priorityOrder.map(name => this.providers.get(name)!);
+  }
+
+  getPriorityOrder(): string[] {
+    return [...this.priorityOrder];
+  }
+
+  getProviderNames(): string[] {
+    return Array.from(this.providers.keys());
   }
 }
