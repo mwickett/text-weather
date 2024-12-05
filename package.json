@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
+    "start": "bun src/server.js",
+    "dev": "bun --watch src/server.js"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
@@ -14,8 +14,5 @@
     "express-validator": "^7.2.0",
     "node-fetch": "^3.3.2",
     "twilio": "^4.19.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.1"
   }
 }
